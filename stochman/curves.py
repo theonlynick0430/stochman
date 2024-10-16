@@ -317,10 +317,12 @@ class CubicSpline(BasicCurve):
         self.register_buffer("basis", basis)
 
         if params is None:
+            # must fit splines for each dimension provided 
+            # ex: for a 2D curve we must fit splines for x(t) and y(t)
             params = torch.zeros(
                 self.begin.shape[0], self.basis.shape[1], self.begin.shape[1],
                 dtype=self.begin.dtype, device=self.begin.device
-            )
+            ) # shape: Bx[dim(basis)]xD
         else:
             params = params.unsqueeze(0) if params.ndim == 2 else params
 
@@ -329,54 +331,59 @@ class CubicSpline(BasicCurve):
         else:
             self.register_buffer("params", params)
 
-    # Compute cubic spline basis with end-points (0, 0) and (1, 0)
+    # Note: constraints are imposed at times that are independent of points we are fitting curve to
+    # TODO: Change this? - might not actually affect geodesic calculation
     def _compute_basis(self, num_edges) -> torch.Tensor:
         with torch.no_grad():
-            # set up constraints
             t = torch.linspace(0, 1, num_edges + 1, dtype=self.begin.dtype)[1:-1]
 
+            # TODO: enforce boundary constraints instead of hardcoding endpoints
+            # enforce end-points to be (0, 0) and (1, 0)
             end_points = torch.zeros(2, 4 * num_edges, dtype=self.begin.dtype)
             end_points[0, 0] = 1.0
             end_points[1, -4:] = 1.0
 
+            # no need to shift constraints since a + b(t-t0) + c(t-t0)^2 + d(t-t0)^3 
+            # can be reformatted to e + f*t + g*t^2 + h*t^3
             zeroth = torch.zeros(num_edges - 1, 4 * num_edges, dtype=self.begin.dtype)
             for i in range(num_edges - 1):
-                si = 4 * i  # start index
+                si = 4 * i
                 fill = torch.tensor([1.0, t[i], t[i] ** 2, t[i] ** 3], dtype=self.begin.dtype)
                 zeroth[i, si : (si + 4)] = fill
                 zeroth[i, (si + 4) : (si + 8)] = -fill
 
             first = torch.zeros(num_edges - 1, 4 * num_edges, dtype=self.begin.dtype)
             for i in range(num_edges - 1):
-                si = 4 * i  # start index
+                si = 4 * i
                 fill = torch.tensor([0.0, 1.0, 2.0 * t[i], 3.0 * t[i] ** 2], dtype=self.begin.dtype)
                 first[i, si : (si + 4)] = fill
                 first[i, (si + 4) : (si + 8)] = -fill
 
             second = torch.zeros(num_edges - 1, 4 * num_edges, dtype=self.begin.dtype)
             for i in range(num_edges - 1):
-                si = 4 * i  # start index
-                fill = torch.tensor([0.0, 0.0, 6.0 * t[i], 2.0], dtype=self.begin.dtype)
+                si = 4 * i
+                fill = torch.tensor([0.0, 0.0, 2.0, 6.0 * t[i]], dtype=self.begin.dtype)
                 second[i, si : (si + 4)] = fill
                 second[i, (si + 4) : (si + 8)] = -fill
 
+            # represents under-constrained system of eqns. for coefficients of cubic splines between each node
             constraints = torch.cat((end_points, zeroth, first, second))
             self.constraints = constraints
 
-            # Compute null space, which forms our basis
+            # solution to system of eqns. is the nullspace
             _, S, V = torch.svd(constraints, some=False)
-            basis = V[:, S.numel() :]  # (num_coeffs)x(intr_dim)
+            basis = V[:, S.numel() :]  # shape: [num_coeffs]x[dim(nullspace)=dim(basis)]
 
             return basis
 
     def _get_coeffs(self) -> torch.Tensor:
         coeffs = (
             self.basis.unsqueeze(0).expand(self.params.shape[0], -1, -1).bmm(self.params)
-        )  # Bx(num_coeffs)xD
+        )  # Bx[num_coeffs]xD
         B, num_coeffs, D = coeffs.shape
         degree = 4
         num_edges = num_coeffs // degree
-        coeffs = coeffs.view(B, num_edges, degree, D)  # Bx(num_edges)x4xD
+        coeffs = coeffs.view(B, num_edges, degree, D)  # Bx[num_edges]x4xD
         return coeffs
 
     def _eval_polynomials(self, t: torch.Tensor, coeffs: torch.Tensor) -> torch.Tensor:
