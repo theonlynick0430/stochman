@@ -17,6 +17,18 @@ class BasicCurve(ABC, nn.Module):
         *args,
         **kwargs,
     ) -> None:
+        """
+        Abstract class that represents a batch of curves in space. 
+        Curves are parametrized using t in [0, 1].
+
+        Args: 
+            begin (torch.Tensor): start points of shape [B, D] or [D]
+            end (torch.Tensor): end points of shape [B, D] or [D]
+            num_nodes (int): number of nodes used for approximation
+            requires_grad (bool): if True, compute gradients for curve parameters
+            args: arguments specific to curve implementation
+            kwargs: keyword arguments specific to curve implementation
+        """
         super().__init__()
         self._num_nodes = num_nodes
         self._requires_grad = requires_grad
@@ -54,28 +66,30 @@ class BasicCurve(ABC, nn.Module):
 
     @property
     def device(self):
-        """Returns the device of the curve."""
+        """Returns the device of the curves."""
         return self.params.device
 
     def __len__(self):
-        """Returns the batch dimension e.g. the number of curves"""
+        """Returns the batch dimension e.g. the number of curves."""
         return self.begin.shape[0]
 
     def plot(
         self, t0: float = 0.0, t1: float = 1.0, N: int = 100, ax: Axis = None, *plot_args, **plot_kwargs
     ):
-        """Plot the curve.
+        """
+        Plot each curve between @t0 and @t1.
 
         Args:
-            t0: initial timepoint
-            t1: final timepoint
-            N: number of points used for plotting the curve
+            t0 (float): start time
+            t1 (float): end time
+            N (int): number of points used for plotting curves
+            ax (Axis): (optional) object to specify where curves should be plotted. If None, uses
+                matplotlib.pyplot. Defaults to None. 
             plot_args: additional arguments passed directly to plt.plot
             plot_kwargs: additional keyword-arguments passed directly to plt.plot
 
         Returns:
             figs: figure handles
-
         """
         with torch.no_grad():
             import matplotlib.pyplot as plt
@@ -109,14 +123,16 @@ class BasicCurve(ABC, nn.Module):
             )
 
     def euclidean_length(self, t0: float = 0.0, t1: float = 1.0, N: int = 100) -> torch.Tensor:
-        """Calculate the euclidian length of the curve
+        """
+        Calculate the euclidian length of each curve between @t0 and @t1.
+
         Args:
-            t0: starting time
-            t1: end time
-            N: number of discretized points
+            t0 (float): start time
+            t1 (float): end time
+            N (int): number of discretized points
 
         Returns:
-            lengths: a tensor with the length of each curve
+            lengths (torch.Tensor): tensor of shape [B] with the length of each curve
         """
         t = torch.linspace(t0, t1, N, device=self.device)  # N
         points = self(t)  # NxD or BxNxD
@@ -136,19 +152,19 @@ class BasicCurve(ABC, nn.Module):
         threshold: float = 1e-6,
         **optimizer_kwargs,
     ) -> torch.Tensor:
-        """Fit the curve to the points by minimizing |x - c(t)|²
+        """
+        Fit each curve by minimizing |@x - self(@t)|².
 
         Args:
-            t:  a torch tensor with N elements showing where to evaluate the curve.
-            x:  a torch tensor of size NxD containing the requested
-                values the curve should take at time t.
-            num_steps: number of optimization steps
-            threshold: stopping criterium
+            t (torch.tensor): tensor of shape [B, N] or [N] with times to evaluate each curve at
+            x (torch.tensor): tensor of shape [B, N, D] or [N, D] containing values each curve 
+                should take at times in @t.
+            num_steps (int): number of optimization steps
+            threshold (float): stopping criterium
             optimizer_kwargs: additional keyword arguments (like lr) passed to the optimizer
 
         Returns:
             loss: optimized loss
-
         """
         # using a second order method on a linear problem should imply
         # that we get to the optimum in few iterations (ideally 1).
@@ -178,25 +194,51 @@ class DiscreteCurve(BasicCurve):
         requires_grad: bool = True,
         params: Optional[torch.Tensor] = None,
     ) -> None:
+        """
+        Class that represents a batch of discrete curves in space. 
+        In particular, we approximate a curve by linearly interpolating between 
+        @num_nodes points. Curves are parametrized using t in [0, 1].
+
+        Args: 
+            begin (torch.Tensor): start points of shape [B, D] or [D]
+            end (torch.Tensor): end points of shape [B, D] or [D]
+            num_nodes (int): number of nodes used for approximation
+            requires_grad (bool): if True, compute gradients for curve parameters
+            params (torch.Tensor): (optional) curve parameters of shape [B, num_nodes-2, D]. 
+                If None, initializes params to linearly interpolate between @begin and @end.
+                Defaults to None.
+        """
         super().__init__(begin, end, num_nodes, requires_grad, params=params)
 
     def _init_params(self, params, *args, **kwargs) -> None:
         self.register_buffer(
             "t",
-            torch.linspace(0, 1, self._num_nodes, dtype=self.begin.dtype)[1:-1]
+            torch.linspace(0, 1, self._num_nodes, dtype=self.begin.dtype)[1:-1] # exclude endpoints
             .view(1, -1, 1)
-            .expand(self.begin.shape[0], -1, self.begin.shape[1]),  # Bx(_num_nodes-2)xD
+            .expand(self.begin.shape[0], -1, self.begin.shape[1]),  # Bx(num_nodes-2)xD
         )
         if params is None:
             params = self.t * self.end.unsqueeze(1) + (1 - self.t) * self.begin.unsqueeze(
                 1
-            )  # Bx(_num_nodes)xD
+            )  # Bx(num_nodes)xD
         if self._requires_grad:
             self.register_parameter("params", nn.Parameter(params))
         else:
             self.register_buffer("params", params)
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
+        """
+        Evaluate each curve at times in @t.
+
+        Args: 
+            t (torch.Tensor): tensor of shape [B, N] or [N] with times to evaluate each curve at 
+
+        Returns: 
+            result (torch.Tensor): tensor of shape [B, N] or [N] with values of each curve 
+                at requested times
+
+        Note: each t must be in [0,1]
+        """
         start_nodes = torch.cat((self.begin.unsqueeze(1), self.params), dim=1)  # Bx(num_edges)xD
         end_nodes = torch.cat((self.params, self.end.unsqueeze(1)), dim=1)  # Bx(num_edges)xD
         B, num_edges, D = start_nodes.shape
@@ -249,12 +291,13 @@ class DiscreteCurve(BasicCurve):
         self, metric=None, t: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Reparametrize the curve to have constant speed.
+        Reparametrize each curve to have constant speed.
 
-        Optional input:
-            metric:     the Manifold under which the curve should have constant speed.
-                        If None then the Euclidean metric is applied.
-                        Default: None.
+        Args:
+            metric (Manifold): (optional) Manifold under which the curve should have constant speed.
+                If None, then the Euclidean metric is applied. Defaults to None.
+            t (torch.Tensor): (optional) tensor of shape [B, N] or [N] of times to query each curve at. 
+                If None, use 100 equally spaced times in [0, 1]. Defaults to None.
 
         Note: It is not possible to back-propagate through this function.
         """
@@ -287,6 +330,7 @@ class DiscreteCurve(BasicCurve):
             return new_t, Ct, local_len.sum(dim=1)
 
     def tospline(self):
+        """Returns discrete curve converted to cubic spline."""
         from stochman import CubicSpline
 
         c = CubicSpline(
@@ -309,6 +353,26 @@ class CubicSpline(BasicCurve):
         basis: Optional[torch.Tensor] = None,
         params: Optional[torch.Tensor] = None,
     ) -> None:
+        """
+        Class that approximates a batch of curves in space using cubic splines.
+        In particular, we approximate a curve using @num_nodes-1 individual cubic splines
+        and compute a basis for the coefficients of the cubic splines that enforce 
+        necessary constraints (see https://www.youtube.com/watch?v=wMMjF7kXnWA). 
+        Curves are parametrized using t in [0, 1].
+
+        Args: 
+            begin (torch.Tensor): start points of shape [B, D] or [D]
+            end (torch.Tensor): end points of shape [B, D] or [D]
+            num_nodes (int): number of nodes used for approximation
+            requires_grad (bool): if True, compute gradients for curve parameters
+            basis (torch.Tensor): (optional) tensor of shape [4*(num_nodes-1), K] that 
+                consists of K basis vectors for the coefficients of all cubic splines. 
+                If None, the basis will be computed using self._compute_basis(). 
+                Defaults to None.
+            params (torch.Tensor): (optional) tensor of shape [B, K, D] of parameters that 
+                specify linear combinations of @basis for each batch and dimension. If None, 
+                params will be initialized to zero. Defaults to None.
+        """
         super().__init__(begin, end, num_nodes, requires_grad, basis=basis, params=params)
 
     def _init_params(self, basis, params) -> None:
@@ -332,19 +396,19 @@ class CubicSpline(BasicCurve):
             self.register_buffer("params", params)
 
     # Note: constraints are imposed at times that are independent of points we are fitting curve to
-    # TODO: Change this? - might not actually affect geodesic calculation
     def _compute_basis(self, num_edges) -> torch.Tensor:
         with torch.no_grad():
-            t = torch.linspace(0, 1, num_edges + 1, dtype=self.begin.dtype)[1:-1]
+            t = torch.linspace(0, 1, num_edges + 1, dtype=self.begin.dtype)[1:-1] # exclude end points
 
-            # TODO: enforce boundary constraints instead of hardcoding endpoints
-            # enforce end-points to be (0, 0) and (1, 0)
-            end_points = torch.zeros(2, 4 * num_edges, dtype=self.begin.dtype)
-            end_points[0, 0] = 1.0
-            end_points[1, -4:] = 1.0
+            # natural boundary conditions: S"(0)=S"(1)=0
+            natural_boundary = torch.zeros(2, 4 * num_edges, dtype=self.begin.dtype)
+            natural_boundary[0, 2] = 2.0
+            natural_boundary[1, -4:] = torch.tensor([0.0, 0.0, 2.0, 6.0])
 
             # no need to shift constraints since a + b(t-t0) + c(t-t0)^2 + d(t-t0)^3 
             # can be reformatted to e + f*t + g*t^2 + h*t^3
+
+            # zeroth derivative conditions: S_i(t_i) = S_(i+1)(t_i)
             zeroth = torch.zeros(num_edges - 1, 4 * num_edges, dtype=self.begin.dtype)
             for i in range(num_edges - 1):
                 si = 4 * i
@@ -352,6 +416,7 @@ class CubicSpline(BasicCurve):
                 zeroth[i, si : (si + 4)] = fill
                 zeroth[i, (si + 4) : (si + 8)] = -fill
 
+            # first derivative conditions: S_i'(t_i) = S_(i+1)'(t_i)
             first = torch.zeros(num_edges - 1, 4 * num_edges, dtype=self.begin.dtype)
             for i in range(num_edges - 1):
                 si = 4 * i
@@ -359,6 +424,7 @@ class CubicSpline(BasicCurve):
                 first[i, si : (si + 4)] = fill
                 first[i, (si + 4) : (si + 8)] = -fill
 
+            # second derivative conditions: S_i"(t_i) = S_(i+1)"(t_i)
             second = torch.zeros(num_edges - 1, 4 * num_edges, dtype=self.begin.dtype)
             for i in range(num_edges - 1):
                 si = 4 * i
@@ -367,7 +433,7 @@ class CubicSpline(BasicCurve):
                 second[i, (si + 4) : (si + 8)] = -fill
 
             # represents under-constrained system of eqns. for coefficients of cubic splines between each node
-            constraints = torch.cat((end_points, zeroth, first, second))
+            constraints = torch.cat((natural_boundary, zeroth, first, second))
             self.constraints = constraints
 
             # solution to system of eqns. is the nullspace
@@ -403,20 +469,25 @@ class CubicSpline(BasicCurve):
         retval = torch.sum(retval, dim=2)                                           # B x |t| x D
         return retval
 
-    def _eval_straight_line(self, t: torch.Tensor) -> torch.Tensor:
-        B, T = t.shape
-        tt = t.view(B, T, 1)               # B x |t| x 1
-        begin = self.begin.unsqueeze(1)    # B x  1  x D
-        end = self.end.unsqueeze(1)        # B x  1  x D
-        return (end - begin) * tt + begin  # B x |t| x D
-
     def forward(self, t: torch.Tensor) -> torch.Tensor:
+        """
+        Evaluate each curve at times in @t.
+
+        Args: 
+            t (torch.Tensor): tensor of shape [B, N] or [N] with times to evaluate each curve at 
+
+        Returns: 
+            retval (torch.Tensor): tensor of shape [B, N] or [N] with values of each curve 
+                at requested times
+
+        Note: each t must be in [0,1]
+        """
         coeffs = self._get_coeffs()  # Bx(num_edges)x4xD
+        print(coeffs[0, :, :, 0])
         no_batch = t.ndim == 1
         if no_batch:
             t = t.expand(coeffs.shape[0], -1)  # Bx|t|
         retval = self._eval_polynomials(t, coeffs)  # Bx|t|xD
-        retval += self._eval_straight_line(t)
         if no_batch and retval.shape[0] == 1:
             retval.squeeze_(0)  # |t|xD
         return retval
@@ -437,7 +508,19 @@ class CubicSpline(BasicCurve):
 
     def deriv(self, t: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Return the derivative of the curve at a given time point.
+        Evaluate the derivative of each curve.
+
+        Args: 
+            t (torch.Tensor): (optional) tensor of shape [B, N] or [N] with times 
+                to evaluate the derivative of each curve at. If None, we construct
+                the derivative spline. Defaults to None. 
+
+        Returns: 
+            retval (CubicSpline/torch.Tensor): if t is None, the derivative spline. 
+                Otherwise, tensor of shape [B, N] or [N] with values of the derivative 
+                of each curve at requested times.
+
+        Note: each t must be in [0,1]
         """
         coeffs = self._get_coeffs()  # Bx(num_edges)x4xD
         B, num_edges, degree, D = coeffs.shape
@@ -470,12 +553,13 @@ class CubicSpline(BasicCurve):
         self, metric=None, t: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Reparametrize the curve to have constant speed.
+        Reparametrize each curve to have constant speed.
 
-        Optional input:
-            metric:     the Manifold under which the curve should have constant speed.
-                        If None then the Euclidean metric is applied.
-                        Default: None.
+        Args:
+            metric (Manifold): (optional) Manifold under which the curve should have constant speed.
+                If None, then the Euclidean metric is applied. Defaults to None.
+            t (torch.Tensor): (optional) tensor of shape [B, N] or [N] of times to query the curve at. 
+                If None, use 100 equally spaced times in [0, 1]. Defaults to None.
 
         Note: It is not possible to back-propagate through this function.
         """
@@ -501,6 +585,7 @@ class CubicSpline(BasicCurve):
             return new_t, Ct, local_len.sum(dim=1)
 
     def todiscrete(self, num_nodes=None):
+        """Returns cubic spline converted to discrete curve."""
         from stochman import DiscreteCurve
 
         if num_nodes is None:
