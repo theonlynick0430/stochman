@@ -365,17 +365,18 @@ class CubicSpline(BasicCurve):
             end (torch.Tensor): end points of shape [B, D] or [D]
             num_nodes (int): number of nodes used for approximation
             requires_grad (bool): if True, compute gradients for curve parameters
-            basis (torch.Tensor): (optional) tensor of shape [4*(num_nodes-1), K] that 
-                consists of K basis vectors for the coefficients of all cubic splines. 
-                If None, the basis will be computed using self._compute_basis(). 
-                Defaults to None.
-            params (torch.Tensor): (optional) tensor of shape [B, K, D] of parameters that 
-                specify linear combinations of @basis for each batch and dimension. If None, 
+            basis (torch.Tensor): (optional) tensor of shape [B, D, 4*(num_nodes-1), K] or 
+                [D, 4*(num_nodes-1), K] that consists of K basis vectors for the coefficients 
+                of the cubic splines for each batch of curves. If None, the basis will be 
+                computed using self._compute_basis(). Defaults to None.
+            params (torch.Tensor): (optional) tensor of shape [B, D, K] or [D, K] of 
+                parameters that specify linear combinations of @basis. If None, 
                 params will be initialized to zero. Defaults to None.
         """
         super().__init__(begin, end, num_nodes, requires_grad, basis=basis, params=params)
 
     def _init_params(self, basis, params) -> None:
+        pass
         if basis is None:
             basis = self._compute_basis(num_edges=self._num_nodes - 1).to(self.begin.device)
         self.register_buffer("basis", basis)
@@ -396,51 +397,65 @@ class CubicSpline(BasicCurve):
             self.register_buffer("params", params)
 
     # Note: constraints are imposed at times that are independent of points we are fitting curve to
-    def _compute_basis(self, num_edges) -> torch.Tensor:
+    def _compute_basis(self, num_edges, thresh=1e-5) -> torch.Tensor:
         with torch.no_grad():
-            t = torch.linspace(0, 1, num_edges + 1, dtype=self.begin.dtype)[1:-1] # exclude end points
+            B = self.begin.shape[0] # batch dim
+            D = self.begin.shape[1] # space dim
+            num_coeff = 4 * num_edges
+
+            # fix boundary points
+            boundary_points = torch.zeros(B, D, 2, num_coeff + 1, dtype=self.begin.dtype)
+            boundary_points[:, :, 0, 0] = 1.0
+            boundary_points[:, :, 0, -1] = self.begin
+            boundary_points[:, :, 1, -5:-1] = 1.0
+            boundary_points[:, :, 1, -1] = self.end
 
             # natural boundary conditions: S"(0)=S"(1)=0
-            natural_boundary = torch.zeros(2, 4 * num_edges, dtype=self.begin.dtype)
-            natural_boundary[0, 2] = 2.0
-            natural_boundary[1, -4:] = torch.tensor([0.0, 0.0, 2.0, 6.0])
+            natural_boundary = torch.zeros(B, D, 2, num_coeff + 1, dtype=self.begin.dtype)
+            natural_boundary[:, :, 0, 2] = 2.0
+            natural_boundary[:, :, 1, -5:-1] = torch.tensor([0.0, 0.0, 2.0, 6.0])
 
             # no need to shift constraints since a + b(t-t0) + c(t-t0)^2 + d(t-t0)^3 
             # can be reformatted to e + f*t + g*t^2 + h*t^3
+            t = torch.linspace(0, 1, num_edges + 1, dtype=self.begin.dtype)[1:-1] # exclude end points
 
             # zeroth derivative conditions: S_i(t_i) = S_(i+1)(t_i)
-            zeroth = torch.zeros(num_edges - 1, 4 * num_edges, dtype=self.begin.dtype)
-            for i in range(num_edges - 1):
+            zeroth = torch.zeros(B, D, num_edges - 1, num_coeff + 1, dtype=self.begin.dtype)
+            for i in range(num_edges-1):
                 si = 4 * i
                 fill = torch.tensor([1.0, t[i], t[i] ** 2, t[i] ** 3], dtype=self.begin.dtype)
-                zeroth[i, si : (si + 4)] = fill
-                zeroth[i, (si + 4) : (si + 8)] = -fill
+                zeroth[:, :, i, si:(si + 4)] = fill
+                zeroth[:, :, i, (si + 4):(si + 8)] = -fill
 
             # first derivative conditions: S_i'(t_i) = S_(i+1)'(t_i)
-            first = torch.zeros(num_edges - 1, 4 * num_edges, dtype=self.begin.dtype)
+            first = torch.zeros(B, D, num_edges - 1, num_coeff + 1, dtype=self.begin.dtype)
             for i in range(num_edges - 1):
                 si = 4 * i
                 fill = torch.tensor([0.0, 1.0, 2.0 * t[i], 3.0 * t[i] ** 2], dtype=self.begin.dtype)
-                first[i, si : (si + 4)] = fill
-                first[i, (si + 4) : (si + 8)] = -fill
+                first[:, :, i, si:(si + 4)] = fill
+                first[:, :, i, (si + 4):(si + 8)] = -fill
 
             # second derivative conditions: S_i"(t_i) = S_(i+1)"(t_i)
-            second = torch.zeros(num_edges - 1, 4 * num_edges, dtype=self.begin.dtype)
+            second = torch.zeros(B, D, num_edges - 1, num_coeff + 1, dtype=self.begin.dtype)
             for i in range(num_edges - 1):
                 si = 4 * i
                 fill = torch.tensor([0.0, 0.0, 2.0, 6.0 * t[i]], dtype=self.begin.dtype)
-                second[i, si : (si + 4)] = fill
-                second[i, (si + 4) : (si + 8)] = -fill
+                second[:, :, i, si:(si + 4)] = fill
+                second[:, :, i, (si + 4):(si + 8)] = -fill
 
             # represents under-constrained system of eqns. for coefficients of cubic splines between each node
-            constraints = torch.cat((natural_boundary, zeroth, first, second))
-            self.constraints = constraints
+            constraints = torch.cat((boundary_points, natural_boundary, zeroth, first, second), dim=2)
+            self.constraints = constraints # shape: [B, D, -1, num_coeffs + 1]
 
-            # solution to system of eqns. is the nullspace
-            _, S, V = torch.svd(constraints, some=False)
-            basis = V[:, S.numel() :]  # shape: [num_coeffs]x[dim(nullspace)=dim(basis)]
+            # solution to system of eqns. is the particular solution + nullsapce
+            A = constraints[:, :, :, :-1].view(B * D, -1, 4 * num_edges)
+            b = constraints[:, :, :, -1].view(B * D, -1)
+            x, _, _, _ = torch.linalg.lstsq(A, b)
+            _, S, V = torch.svd(A, some=False)
+            nullspace = V[:, :, S.shape[1]:]  
+            basis = torch.cat((nullspace, x.view(B*D, -1, 1)), dim=2).view(B, D, 4 * num_edges, -1)
 
-            return basis
+            return basis # shape: [B, D, num_coeffs, dim(nullspace)+1=dim(basis)]
 
     def _get_coeffs(self) -> torch.Tensor:
         coeffs = (
