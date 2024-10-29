@@ -369,9 +369,9 @@ class CubicSpline(BasicCurve):
                 consists of K basis vectors for the coefficients of all cubic splines. 
                 If None, the basis will be computed using self._compute_basis(). 
                 Defaults to None.
-            params (torch.Tensor): (optional) tensor of shape [B, K, D] of parameters that 
-                specify linear combinations of @basis for each batch and dimension. If None, 
-                params will be initialized to zero. Defaults to None.
+            params (torch.Tensor): (optional) tensor of shape [B, K, D] or [K, D] of 
+                parameters that specify linear combinations of @basis for each batch and 
+                dimension. If None, params will be initialized to zero. Defaults to None.
         """
         super().__init__(begin, end, num_nodes, requires_grad, basis=basis, params=params)
 
