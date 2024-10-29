@@ -89,7 +89,7 @@ class BasicCurve(ABC, nn.Module):
             plot_kwargs: additional keyword-arguments passed directly to plt.plot
 
         Returns:
-            figs: figure handles
+            figs (array): array of size [B] of figure handles
         """
         with torch.no_grad():
             import matplotlib.pyplot as plt
@@ -483,7 +483,6 @@ class CubicSpline(BasicCurve):
         Note: each t must be in [0,1]
         """
         coeffs = self._get_coeffs()  # Bx(num_edges)x4xD
-        print(coeffs[0, :, :, 0])
         no_batch = t.ndim == 1
         if no_batch:
             t = t.expand(coeffs.shape[0], -1)  # Bx|t|
