@@ -350,8 +350,6 @@ class CubicSpline(BasicCurve):
         end: torch.Tensor,
         num_nodes: int = 5,
         requires_grad: bool = True,
-        basis: Optional[torch.Tensor] = None,
-        params: Optional[torch.Tensor] = None,
     ) -> None:
         """
         Class that approximates a batch of curves in space using cubic splines.
@@ -366,9 +364,9 @@ class CubicSpline(BasicCurve):
             num_nodes (int): number of nodes used for approximation
             requires_grad (bool): if True, compute gradients for curve parameters
         """
-        super().__init__(begin, end, num_nodes, requires_grad, basis=basis, params=params)
+        super().__init__(begin, end, num_nodes, requires_grad)
 
-    def _init_params(self, basis, params) -> None:
+    def _init_params(self) -> None:
         xp, nullspace = self._compute_constraints(num_edges=self._num_nodes - 1)
         self.register_buffer("xp", xp)
         self.register_buffer("nullspace", nullspace)
