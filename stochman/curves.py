@@ -234,7 +234,7 @@ class DiscreteCurve(BasicCurve):
             t (torch.Tensor): tensor of shape [B, N] or [N] with times to evaluate each curve at 
 
         Returns: 
-            result (torch.Tensor): tensor of shape [B, N] or [N] with values of each curve 
+            retval (torch.Tensor): tensor of shape [B, N, D] or [N, D] with values of each curve 
                 at requested times
 
         Note: each t must be in [0,1]
@@ -398,12 +398,6 @@ class CubicSpline(BasicCurve):
             boundary_points_b[:, :, 0, 0] = self.begin
             boundary_points_b[:, :, 1, 0] = self.end
 
-            # natural boundary conditions: S"(0)=S"(1)=0
-            natural_boundary_A = torch.zeros(B, D, 2, num_coeff, dtype=dtype, device=self.device)
-            natural_boundary_A[:, :, 0, 2] = 2.0
-            natural_boundary_A[:, :, 1, -4:] = torch.tensor([0.0, 0.0, 2.0, 6.0], dtype=dtype, device=self.device)
-            natural_boundary_b = torch.zeros(B, D, 2, 1, dtype=dtype, device=self.device)
-
             # no need to shift constraints since a + b(t-t0) + c(t-t0)^2 + d(t-t0)^3 
             # can be reformatted to e + f*t + g*t^2 + h*t^3
             t = torch.linspace(0, 1, num_edges + 1, dtype=dtype, device=self.device)[1:-1] # exclude end points
@@ -432,9 +426,9 @@ class CubicSpline(BasicCurve):
             deriv_b = torch.zeros(B, D, 3 * (num_edges - 1), 1, dtype=dtype, device=self.device)
 
             # represents under-constrained system of eqns. for coefficients of cubic splines between each node
-            A = torch.cat((boundary_points_A, natural_boundary_A, zeroth_A, first_A, second_A), dim=2)
+            A = torch.cat((boundary_points_A, zeroth_A, first_A, second_A), dim=2)
             A = A.view(B * D, -1, 4 * num_edges)
-            b = torch.cat((boundary_points_b, natural_boundary_b, deriv_b), dim=2)
+            b = torch.cat((boundary_points_b, deriv_b), dim=2)
             b = b.view(B * D, -1, 1)
 
             # solution to system of eqns. is the particular solution + nullsapce
@@ -480,7 +474,7 @@ class CubicSpline(BasicCurve):
             t (torch.Tensor): tensor of shape [B, N] or [N] with times to evaluate each curve at 
 
         Returns: 
-            retval (torch.Tensor): tensor of shape [B, N] or [N] with values of each curve 
+            retval (torch.Tensor): tensor of shape [B, N, D] or [N, D] with values of each curve 
                 at requested times
 
         Note: each t must be in [0,1]
