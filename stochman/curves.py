@@ -83,8 +83,8 @@ class BasicCurve(ABC, nn.Module):
             t0 (float): start time
             t1 (float): end time
             N (int): number of points used for plotting curves
-            ax (Axis): (optional) object to specify where curves should be plotted. If None, uses
-                matplotlib.pyplot. Defaults to None. 
+            ax (Axis): (optional) object to specify where each curve should be plotted. 
+                If None, uses matplotlib.pyplot. Defaults to None. 
             plot_args: additional arguments passed directly to plt.plot
             plot_kwargs: additional keyword-arguments passed directly to plt.plot
 
